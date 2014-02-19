@@ -10,6 +10,13 @@ require 'mail'
 require 'uri'
 require 'erb'
 require 'iconv'
+require 'active_support'
+
+class String
+  def display_length
+    ActiveSupport::Multibyte::Chars.new(self).normalize(:c).length
+  end
+end
 
 options = {}
 
@@ -68,6 +75,7 @@ end
 exit(1) unless STDIN.fcntl(Fcntl::F_GETFL, 0) == 0
 
 mail = Mail.new(STDIN.read())
+charset = "utf-8"
 
 # Capture the twitter handle from the To: header
 to_regex = /^#{@config['mail']['mailbox']}\+([A-Za-z0-9_]+)@#{@config['mail']['delivery_configuration'][:domain]}/
@@ -77,10 +85,13 @@ if !(mail.to.first =~ to_regex)
 	exit(1)
 end
 
-@to = "@" + to_regex.match(mail.to.first)[1] + " "
+@to = "@" + to_regex.match(mail.to.first)[1]
 
 # Form the signature from the first letter of the sender's name
-@sig = " —" + mail[:from].decoded.chars.first
+first_char = mail[:from].decoded.chars.first
+first_char = mail[:from].decoded.chars[1] if first_char == '"'
+
+@sig = "—" + first_char
 
 # Capture the status id of the tweet we're replying to
 reply_status_regex = /^<(\d+)@#{@config['mail']['mailbox']}-#{@config['auth_token']}\.#{@config['mail']['delivery_configuration'][:domain]}>/
@@ -99,15 +110,18 @@ if (mail.multipart?)
 	mail.parts.each do |part|
 		if part.content_type =~ /plain/
 			decoded_body = part.body.decoded
+			charset = part.content_type_parameters["charset"]
 		end
 	end
 else
 	decoded_body = mail.body.decoded
+	charset = mail.content_type_parameters["charset"]
 end
 
-# Apple Mail sends messages in windows-1252 when there are non-ascii characters present
-untrusted_body = /(.*)On.*wrote:.*/m.match(decoded_body)[1].strip
-ic = Iconv.new('UTF-8', 'WINDOWS-1252')
+# Apple Mail sends messages in windows-1252 when there are non-ascii characters present so we need to re-encode to UTF-8
+untrusted_body = /(.*)On .* wrote:.*/m.match(decoded_body)[1].strip
+ic = Iconv.new('UTF-8', charset)
+
 body = ic.iconv(untrusted_body + ' ')[0..-2]
 
 # Strip out the signature
@@ -122,10 +136,12 @@ msg = "#{@to} #{@reply_text} #{@sig}"
 
 puts msg if options[:verbose]
 
-char_count = msg.chars.count
+char_count = msg.display_length
 
 if char_count > 140
 	$stderr.puts "Your message is too long: #{char_count} characters"
+	$stderr.puts msg
+	$stderr.puts "----|----|----|----|----|----|----|----|----|----|----|----|----|----|----|----|----|----|----|----|----|----|----|----|----|----|----|----|"
 	exit(1)
 end
 
